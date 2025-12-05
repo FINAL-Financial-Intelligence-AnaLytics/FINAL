@@ -28,3 +28,5 @@ AI Financial Consultant
 - category - string?
 
 Предварительный объем ~32Мб или порядка 2500 статей
+
+Пример данных: https://github.com/FINAL-Financial-Intelligence-AnaLytics/FINAL/blob/main/rbk_finances.csv
