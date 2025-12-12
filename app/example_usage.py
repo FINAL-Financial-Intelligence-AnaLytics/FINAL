@@ -4,7 +4,7 @@ from llm_client import (
     FinancialDiagnosisModule,
     GoalsInvestmentsModule
 )
-from llm_client.implementations import OpenAIFinancialClient
+from llm_client.implementations import MistralFinancialClient
 
 
 class SimpleRAGRetriever:
@@ -19,14 +19,14 @@ class SimpleRAGRetriever:
 
 def main():
     try:
-        llm_client = OpenAIFinancialClient(
-            model_name="gpt-3.5-turbo",
+        llm_client = MistralFinancialClient(
+            model_name="mistral-large-latest",
             api_key=None
         )
     except Exception as e:
         print(f"Ошибка инициализации клиента: {e}")
-        print("Убедитесь, что установлен openai: pip install openai")
-        print("И установлена переменная окружения OPENAI_API_KEY")
+        print("Убедитесь, что установлен mistralai: pip install mistralai")
+        print("И установлена переменная окружения MISTRAL_API_KEY")
         return
     
     rag_retriever = SimpleRAGRetriever()

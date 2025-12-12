@@ -3,27 +3,27 @@ import os
 from ..base_client import FinancialLLMClient
 
 
-class OpenAIFinancialClient(FinancialLLMClient):
-    def __init__(self, model_name: str = "gpt-4", api_key: Optional[str] = None):
+class MistralFinancialClient(FinancialLLMClient):
+    def __init__(self, model_name: str = "mistral-large-latest", api_key: Optional[str] = None):
         super().__init__(model_name, api_key)
         
         try:
-            from openai import OpenAI
-            self.OpenAI = OpenAI
+            from mistralai import Mistral
+            self.Mistral = Mistral
         except ImportError:
             raise ImportError(
-                "Библиотека openai не установлена. "
-                "Установите её: pip install openai"
+                "Библиотека mistralai не установлена. "
+                "Установите её: pip install mistralai"
             )
         
-        api_key_value = api_key or os.getenv("OPENAI_API_KEY")
+        api_key_value = api_key or os.getenv("MISTRAL_API_KEY")
         if not api_key_value:
             raise ValueError(
-                "API ключ OpenAI не предоставлен. "
-                "Укажите его в параметре api_key или установите переменную окружения OPENAI_API_KEY"
+                "API ключ Mistral не предоставлен. "
+                "Укажите его в параметре api_key или установите переменную окружения MISTRAL_API_KEY"
             )
         
-        self.client = self.OpenAI(api_key=api_key_value)
+        self.client = self.Mistral(api_key=api_key_value)
     
     def generate_response(
         self,
@@ -42,8 +42,13 @@ class OpenAIFinancialClient(FinancialLLMClient):
             {"role": "user", "content": prompt}
         ]
         
+        # Добавляем контекст из RAG, если он есть
+        if context:
+            context_text = self._format_rag_context(context)
+            messages[-1]["content"] = prompt + context_text
+        
         try:
-            response = self.client.chat.completions.create(
+            response = self.client.chat.complete(
                 model=self.model_name,
                 messages=messages,
                 temperature=0.7,

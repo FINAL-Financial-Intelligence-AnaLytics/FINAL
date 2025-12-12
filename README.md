@@ -70,7 +70,7 @@
 │                          │                                  │
 │                          ▼                                  │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │         LLM Provider (OpenAI/Anthropic/etc)          │   │
+│  │              LLM Provider (Mistral AI)                │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -86,7 +86,7 @@
 - **`financial_consultation.py`** - Модуль финансовой консультации
 - **`financial_diagnosis.py`** - Модуль финансовой диагностики
 - **`goals_investments.py`** - Модуль целей и инвестиций
-- **`implementations/openai_client.py`** - Реализация для OpenAI API
+- **`implementations/mistral_client.py`** - Реализация для Mistral API
 
 ### 2. Данные (`*.csv`)
 
@@ -106,7 +106,7 @@
 ### Требования
 
 - Python 3.8+
-- OpenAI API ключ (или другой LLM провайдер)
+- Mistral API ключ
 - Векторная БД (Qdrant, Chroma, Pinecone и т.д.) - опционально
 
 ### Установка зависимостей
@@ -120,9 +120,9 @@ pip install -r requirements.txt
 Создайте файл `.env` в корне проекта:
 
 ```bash
-# LLM настройки
-OPENAI_API_KEY=your-openai-api-key
-OPENAI_MODEL=gpt-3.5-turbo
+# Mistral настройки
+MISTRAL_API_KEY=your-mistral-api-key
+MISTRAL_MODEL=mistral-large-latest
 
 # RAG настройки
 RAG_TOP_K=5
@@ -142,8 +142,8 @@ QDRANT_COLLECTION=financial_rag
 Или экспортируйте переменные:
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="gpt-3.5-turbo"
+export MISTRAL_API_KEY="your-mistral-api-key"
+export MISTRAL_MODEL="mistral-large-latest"
 ```
 
 ## Использование
@@ -156,12 +156,12 @@ from app.llm_client import (
     FinancialDiagnosisModule,
     GoalsInvestmentsModule
 )
-from app.llm_client.implementations import OpenAIFinancialClient
+from app.llm_client.implementations import MistralFinancialClient
 
-# Инициализация LLM клиента
-llm_client = OpenAIFinancialClient(
-    model_name="gpt-3.5-turbo",
-    api_key=None  # Используется из переменной окружения
+# Инициализация LLM клиента (Mistral)
+llm_client = MistralFinancialClient(
+    model_name="mistral-large-latest",
+    api_key=None  # Используется из переменной окружения MISTRAL_API_KEY
 )
 
 # Модуль финансовой консультации
@@ -224,7 +224,7 @@ class FinancialRAGRetriever:
         return documents
     
     def _generate_embedding(self, text: str) -> List[float]:
-        # Используйте модель эмбеддингов (например, OpenAI text-embedding-ada-002)
+        # Используйте модель эмбеддингов (например, Mistral embeddings)
         # или локальную модель (sentence-transformers)
         pass
 
@@ -258,7 +258,7 @@ client = QdrantClient(host="localhost", port=6333)
 client.create_collection(
     collection_name="financial_rag",
     vectors_config=VectorParams(
-        size=1536,  # Размерность эмбеддинга (для OpenAI ada-002)
+        size=1024,  # Размерность эмбеддинга (для Mistral embeddings)
         distance=Distance.COSINE
     )
 )
@@ -307,11 +307,11 @@ for idx, row in df.iterrows():
 ```python
 from fastapi import FastAPI
 from app.llm_client import FinancialConsultationModule
-from app.llm_client.implementations import OpenAIFinancialClient
+from app.llm_client.implementations import MistralFinancialClient
 
 app = FastAPI()
 
-llm_client = OpenAIFinancialClient(model_name="gpt-3.5-turbo")
+llm_client = MistralFinancialClient(model_name="mistral-large-latest")
 consultation = FinancialConsultationModule(llm_client=llm_client)
 
 @app.post("/api/consultation/search")
@@ -360,8 +360,8 @@ CMD ["python", "-m", "app.example_usage"]
 ### Переменные окружения для продакшена
 
 ```bash
-OPENAI_API_KEY=prod-api-key
-OPENAI_MODEL=gpt-4
+MISTRAL_API_KEY=prod-mistral-api-key
+MISTRAL_MODEL=mistral-large-latest
 RAG_TOP_K=10
 MAX_TOKENS=4000
 TEMPERATURE=0.7
@@ -408,7 +408,7 @@ FINAL/
 │       ├── goals_investments.py
 │       └── implementations/
 │           ├── __init__.py
-│           └── openai_client.py
+│           └── mistral_client.py
 ├── deploy/                          # Конфигурации деплоя
 ├── *.csv                           # Данные для RAG
 ├── requirements.txt                # Зависимости

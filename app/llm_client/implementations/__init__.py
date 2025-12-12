@@ -2,7 +2,7 @@
 Реализации LLM клиентов для различных провайдеров
 """
 
-from .openai_client import OpenAIFinancialClient
+from .mistral_client import MistralFinancialClient
 
-__all__ = ['OpenAIFinancialClient']
+__all__ = ['MistralFinancialClient']
 
