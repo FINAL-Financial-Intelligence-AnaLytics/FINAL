@@ -11,7 +11,18 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
 from sentence_transformers import SentenceTransformer
 
-from config import settings
+import sys
+import os
+from pathlib import Path
+
+# Добавляем корневую директорию в PYTHONPATH
+root_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(root_dir))
+
+# Загружаем переменные окружения
+from dotenv import load_dotenv
+env_path = root_dir / '.env'
+load_dotenv(dotenv_path=env_path)
 
 
 def stable_uuid(*parts: Any) -> str:
@@ -39,7 +50,6 @@ def ensure_collection(
         )
         return
 
-    # Create if missing, else validate vector size
     try:
         info = client.get_collection(collection)
         size = getattr(info.config.params.vectors, "size", None)
@@ -69,7 +79,7 @@ def embed_texts(
         texts,
         batch_size=batch_size,
         show_progress_bar=False,
-        normalize_embeddings=True,  # good default for cosine
+        normalize_embeddings=True,
     )
     return np.asarray(vectors, dtype=np.float32)
 
@@ -101,13 +111,6 @@ def main(
     upsert_batch: int = 256,
     embed_batch: int = 64,
 ):
-    """
-    Expects CSV with at least:
-      - text (chunk text)
-
-    Optional columns (saved into payload if present):
-      - chunk_id, doc_id, url, title, source, section, created_at, etc.
-    """
     qdrant_url = qdrant_url or os.getenv("QDRANT_URL", "http://localhost:6333")
     qdrant_api_key = qdrant_api_key or os.getenv("QDRANT_API_KEY", None)
 
@@ -174,17 +177,31 @@ def main(
         upsert_with_retries(client, collection, points)
 
     info = client.get_collection(collection)
-    print(f"✅ Done. Collection '{collection}' points_count={info.points_count}, vector_size={vector_size}")
+    print(f"Done. Collection '{collection}' points_count={info.points_count}, vector_size={vector_size}")
 
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Подготовка данных для Qdrant")
+    parser.add_argument("--input-csv", default="fincult_articles_by_categories_formatted.csv", help="Путь к CSV файлу")
+    parser.add_argument("--collection", default="finance_theory", help="Имя коллекции")
+    parser.add_argument("--model", default=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-base"), help="Модель для эмбеддингов")
+    parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", "http://localhost:6333"), help="URL Qdrant")
+    parser.add_argument("--qdrant-api-key", default=os.getenv("QDRANT_API_KEY"), help="API ключ Qdrant")
+    parser.add_argument("--recreate", action="store_true", help="Пересоздать коллекцию")
+    parser.add_argument("--upsert-batch", type=int, default=256, help="Размер батча для upsert")
+    parser.add_argument("--embed-batch", type=int, default=64, help="Размер батча для эмбеддингов")
+    
+    args = parser.parse_args()
+    
     main(
-        input_csv="fincult_articles_chunked.csv",
-        collection="finance_theory",
-        model_name=os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-base"),
-        qdrant_url=settings.qdrant_url,
-        qdrant_api_key=settings.qdrant_api_key,
-        recreate=False,   # поставь True, если хочешь пересоздать коллекцию
-        upsert_batch=256,
-        embed_batch=64,
+        input_csv=args.input_csv,
+        collection=args.collection,
+        model_name=args.model,
+        qdrant_url=args.qdrant_url,
+        qdrant_api_key=args.qdrant_api_key,
+        recreate=args.recreate,
+        upsert_batch=args.upsert_batch,
+        embed_batch=args.embed_batch,
     )

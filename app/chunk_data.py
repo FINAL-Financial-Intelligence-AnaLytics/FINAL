@@ -192,9 +192,7 @@ def chunk_csv_file(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Чанкование данных из CSV файла для RAG системы"
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "input_file",
         type=str,
