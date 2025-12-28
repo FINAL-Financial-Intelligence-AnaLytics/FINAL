@@ -3,11 +3,10 @@ from typing import Optional
 
 
 class Config:
-    OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "tngtech/deepseek-r1t2-chimera:free")
-    OPENROUTER_SITE_URL: Optional[str] = os.getenv("OPENROUTER_SITE_URL")
-    OPENROUTER_SITE_NAME: Optional[str] = os.getenv("OPENROUTER_SITE_NAME")
-    OPENROUTER_TEMPERATURE: float = float(os.getenv("OPENROUTER_TEMPERATURE", "0.1"))
+    MISTRAL_API_KEY: Optional[str] = os.getenv("MISTRAL_API_KEY")
+    MISTRAL_MODEL: str = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
+    MISTRAL_BASE_URL: str = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
+    MISTRAL_TEMPERATURE: float = float(os.getenv("MISTRAL_TEMPERATURE", "0.1"))
     
     RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "5"))
     MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "2000"))
@@ -17,17 +16,16 @@ class Config:
     
     @classmethod
     def validate(cls) -> bool:
-        if not cls.OPENROUTER_API_KEY:
+        if not cls.MISTRAL_API_KEY:
             return False
         return True
     
     @classmethod
-    def get_openrouter_config(cls) -> dict:
+    def get_mistral_config(cls) -> dict:
         return {
-            "model_name": cls.OPENROUTER_MODEL,
-            "api_key": cls.OPENROUTER_API_KEY,
-            "site_url": cls.OPENROUTER_SITE_URL,
-            "site_name": cls.OPENROUTER_SITE_NAME,
-            "temperature": cls.OPENROUTER_TEMPERATURE
+            "model_name": cls.MISTRAL_MODEL,
+            "api_key": cls.MISTRAL_API_KEY,
+            "base_url": cls.MISTRAL_BASE_URL,
+            "temperature": cls.MISTRAL_TEMPERATURE
         }
 

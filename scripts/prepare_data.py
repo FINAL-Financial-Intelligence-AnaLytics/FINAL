@@ -135,7 +135,8 @@ def main(
         recreate=recreate,
     )
 
-    payload_cols = [c for c in df.columns if c != "text"]
+    keep_columns = ["source"]
+    payload_cols = [c for c in keep_columns if c in df.columns]
 
     for batch_rows in tqdm(list(chunked(df.index.tolist(), upsert_batch)), desc="Upserting"):
         batch_df = df.loc[batch_rows]
@@ -159,10 +160,9 @@ def main(
                 if isinstance(val, np.generic):
                     val = val.item()
                 payload[c] = val
+            
             pid = stable_uuid(
-                payload.get("doc_id"),
-                payload.get("url"),
-                payload.get("chunk_id"),
+                payload.get("source"),
                 payload["text"][:200],
             )
 

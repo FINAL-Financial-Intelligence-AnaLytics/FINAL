@@ -1,5 +1,5 @@
-from .openrouter_financial_client import OpenRouterFinancialClient
-from .openrouter_client import OpenRouterLLM
+from .mistral_financial_client import MistralFinancialClient
+from .mistral_client import MistralLLM
 
-__all__ = ['OpenRouterFinancialClient', 'OpenRouterLLM']
+__all__ = ['MistralFinancialClient', 'MistralLLM']
 
