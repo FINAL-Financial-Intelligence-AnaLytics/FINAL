@@ -4,3 +4,4 @@ from dataclasses import dataclass
 class RAGChunk:
     text: str
     score: float
+

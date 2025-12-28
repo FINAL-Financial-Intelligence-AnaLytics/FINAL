@@ -1,8 +1,5 @@
-"""
-Реализации LLM клиентов для различных провайдеров
-"""
+from .openrouter_financial_client import OpenRouterFinancialClient
+from .openrouter_client import OpenRouterLLM
 
-from .mistral_client import MistralFinancialClient
-
-__all__ = ['MistralFinancialClient']
+__all__ = ['OpenRouterFinancialClient', 'OpenRouterLLM']
 
