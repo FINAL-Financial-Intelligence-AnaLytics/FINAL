@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -10,7 +11,9 @@ from sentence_transformers import SentenceTransformer
 
 from app.config import Config
 from app.models import RAGChunk
-from app.llm_client.implementations.openrouter_client import OpenRouterLLM
+from app.llm_client.implementations.mistral_client import MistralLLM
+
+logger = logging.getLogger(__name__)
 
 
 def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
@@ -59,7 +62,7 @@ class RAGModule:
         collection: str = "finance_theory",
         model_name: Optional[str] = None,
         device: Optional[str] = None,
-        llm: Optional[OpenRouterLLM] = None,
+        llm: Optional[MistralLLM] = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         user_prompt: str = DEFAULT_USER_PROMPT,
         qdrant_url: Optional[str] = None,
@@ -69,41 +72,69 @@ class RAGModule:
         qdrant_api_key = qdrant_api_key or os.getenv("QDRANT_API_KEY")
         
         if qdrant_url:
-            self.client = QdrantClient(
-                url=qdrant_url,
-                api_key=qdrant_api_key,
-                timeout=30,
-                check_compatibility=False,
-            )
+            try:
+                self.client = QdrantClient(
+                    url=qdrant_url,
+                    api_key=qdrant_api_key if qdrant_api_key else None,
+                    timeout=30,
+                    check_compatibility=False,
+                )
+                try:
+                    self.client.get_collections()
+                except Exception as e:
+                    logger.warning(f"Не удалось подключиться к Qdrant: {e}")
+                    self.client = None
+            except Exception as e:
+                logger.error(f"Ошибка при создании клиента Qdrant: {e}")
+                self.client = None
         else:
             self.client = None
             
         self.collection = collection
 
-        model_name = model_name or os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
-        self.model = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
-        self.model_is_e5 = "e5" in model_name.lower()
+        model_name = model_name or os.getenv("EMBEDDING_MODEL")
+        self.model_name = model_name
+        self.device = device
+        self._model = None
+        self.model_is_e5 = "e5" in model_name.lower() if model_name else False
+        self._model_enabled = model_name is not None
 
         self.llm = llm
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         if self.llm is None:
-            openrouter_key = Config.OPENROUTER_API_KEY or os.getenv("OPENROUTER_API_KEY")
-            if openrouter_key:
-                self.llm = OpenRouterLLM(
-                    api_key=openrouter_key,
-                    model=Config.OPENROUTER_MODEL,
-                    site_url=Config.OPENROUTER_SITE_URL,
-                    site_name=Config.OPENROUTER_SITE_NAME,
-                    temperature=Config.OPENROUTER_TEMPERATURE,
-                )        
+            mistral_key = Config.MISTRAL_API_KEY or os.getenv("MISTRAL_API_KEY")
+            if mistral_key:
+                self.llm = MistralLLM(
+                    api_key=mistral_key,
+                    model=Config.MISTRAL_MODEL,
+                    base_url=Config.MISTRAL_BASE_URL,
+                    temperature=Config.MISTRAL_TEMPERATURE,
+                )
+    
+    @property
+    def model(self) -> Optional[SentenceTransformer]:
+        if not self._model_enabled:
+            return None
+        if self._model is None:
+            logger.info(f"Загрузка модели эмбеддингов: {self.model_name}")
+            if self.device:
+                self._model = SentenceTransformer(self.model_name, device=self.device)
+            else:
+                self._model = SentenceTransformer(self.model_name, device="cpu")
+            logger.info(f"✅ Модель {self.model_name} загружена")
+        return self._model        
 
     def _embed_query(self, query: str) -> np.ndarray:
+        if not self._model_enabled or self.model is None:
+            raise RuntimeError("Модель эмбеддингов не загружена. Установите EMBEDDING_MODEL в .env или передайте model_name в RAGModule")
         q = f"query: {query}" if self.model_is_e5 else query
         vec = self.model.encode(q, normalize_embeddings=True)
         return np.asarray(vec, dtype=np.float32)
 
     def _embed_texts(self, texts: List[str]) -> np.ndarray:
+        if not self._model_enabled or self.model is None:
+            raise RuntimeError("Модель эмбеддингов не загружена. Установите EMBEDDING_MODEL в .env или передайте model_name в RAGModule")
         if self.model_is_e5:
             texts = [f"passage: {t}" for t in texts]
         vecs = self.model.encode(texts, normalize_embeddings=True, batch_size=32, show_progress_bar=False)
@@ -158,6 +189,9 @@ class RAGModule:
             limit = top_k
         if not self.client:
             return []
+        
+        if not self._model_enabled:
+            raise RuntimeError("Модель эмбеддингов не настроена. Установите EMBEDDING_MODEL в .env для использования RAG")
             
         qvec = self._embed_query(query)
 
@@ -202,7 +236,17 @@ class RAGModule:
     def generate(self, prompt: str) -> str:
         if not self.llm:
             raise RuntimeError("LLM client is not set. Pass llm=... into RAGModule.")
-        return self.llm.generate(prompt)
+        try:
+            return self.llm.generate(prompt)
+        except Exception as e:
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                raise RuntimeError(
+                    f"Ошибка аутентификации Mistral API. "
+                    f"Проверьте, что MISTRAL_API_KEY установлен правильно. "
+                    f"Ошибка: {error_msg}"
+                ) from e
+            raise
 
     def answer(
         self,
@@ -239,4 +283,3 @@ class RAGModule:
             "answer": text,
             "chunks": chunks,  
         }
-
