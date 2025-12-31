@@ -22,9 +22,13 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY requirements-eval.txt .
+RUN pip install --no-cache-dir -r requirements-eval.txt
+
 # Copy the rest of the application
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+COPY eval/ ./eval/
 
 # Create non-root user and switch to it
 RUN useradd -m appuser && chown -R appuser:appuser /app
