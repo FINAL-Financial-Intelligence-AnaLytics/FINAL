@@ -32,7 +32,6 @@ services:
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-production}
       - TZ=Europe/Moscow
-      - QDRANT_URL=http://qdrant:6333
       - PYTHONPATH=/app
       - WORKERS=${WORKERS:-4}
       - THREADS=${THREADS:-4}
