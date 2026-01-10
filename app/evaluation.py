@@ -13,7 +13,7 @@ from ragas.llms import LangchainLLMWrapper
 from ragas.metrics import AnswerRelevancy, ContextPrecision, ContextRecall, Faithfulness
 from ragas.run_config import RunConfig
 
-from app.rag_module import RAGModule, RetrievalMode, RewriteMode
+from app.rag_module import RAGModule, RetrievalMode, RewriteMode, HybridCombinationMethod
 from app.llm_client.implementations.mistral_client import MistralLLM
 
 
@@ -54,6 +54,9 @@ def generate_answers_for_configs(rag_base_config: Dict[str, Any], dataset_path: 
             enable_mmr=rag_base_config.get("enable_mmr", True),
             qdrant_url=rag_base_config.get("qdrant_url"),
             qdrant_api_key=rag_base_config.get("qdrant_api_key"),
+            bm25_prefetch=200 if retrieval_mode == RetrievalMode.HYBRID else 100,
+            vector_prefetch=100 if retrieval_mode == RetrievalMode.HYBRID else 50,
+            hybrid_method=HybridCombinationMethod.RRF if retrieval_mode == RetrievalMode.HYBRID else None
         )
 
         eval_samples = []

@@ -34,11 +34,22 @@ class RewriteMode(Enum):
     TRAINABLE = "trainable"
 
 
+class HybridCombinationMethod(Enum):
+    WEIGHTED_SUM = "weighted_sum"
+    RRF = "rrf"  # Reciprocal Rank Fusion
+    RANK_WEIGHTED = "rank_weighted"
+
+
+class
+
+
 def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b))
+    """Calculate cosine similarity between two vectors"""
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
 def _format_context(chunks: List[RAGChunk], max_chars: int = 8000) -> str:
+    """Format context for prompt"""
     parts = []
     total = 0
     for i, c in enumerate(chunks, 1):
@@ -53,214 +64,351 @@ def _format_context(chunks: List[RAGChunk], max_chars: int = 8000) -> str:
 def _tokenize(text: str) -> List[str]:
     """Simple tokenizer for BM25"""
     text = text.lower().strip()
-    tokens = text.split()
+    # Split by punctuation and whitespace
+    tokens = re.findall(r'\b\w+\b', text)
     tokens = [t for t in tokens if len(t) > 1]
     return tokens
 
 
 class QueryRewriter:
-    """Query Rewriter based on the paper's approach"""
+    """Query Rewriter with improved prompting"""
 
     def __init__(
             self,
             mode: RewriteMode = RewriteMode.NONE,
             llm: Optional[MistralLLM] = None,
-            trainable_model_path: Optional[str] = None
+            trainable_model_path: Optional[str] = None,
+            domain: str = "finance"
     ):
         self.mode = mode
         self.llm = llm
         self.trainable_model_path = trainable_model_path
+        self.domain = domain
 
-        # For trainable rewriter (simplified - in practice you'd load a trained model)
+        # Domain-specific configurations
+        self.domain_keywords = {
+            "finance": ["инвестиции", "акции", "облигации", "портфель", "риск",
+                        "доходность", "рынок", "финансы", "экономика", "бюджет"]
+        }
+
+        # Store rewritten queries for analysis
+        self.rewrite_history = []
+
+        # For trainable rewriter
         self.trainable_model = None
         if mode == RewriteMode.TRAINABLE and trainable_model_path:
             self._load_trainable_model()
 
     def _load_trainable_model(self):
-        """Load a trained rewriter model (simplified implementation)"""
-        # In practice, you would load a trained T5 or similar model here
-        # For now, we'll use a placeholder that returns the original query
+        """Load a trained rewriter model"""
         logger.info(f"Trainable rewriter would load from {self.trainable_model_path}")
 
     def rewrite(
             self,
             query: str,
-            task_type: str = "qa",  # "qa" or "multiple_choice"
-            few_shot_examples: Optional[List[Tuple[str, str]]] = None
+            task_type: str = "qa",
+            few_shot_examples: Optional[List[Tuple[str, str]]] = None,
+            max_retries: int = 2
     ) -> str:
-        """Rewrite the query based on the selected mode"""
+        """Rewrite query with improved logic"""
         if self.mode == RewriteMode.NONE:
             return query
 
-        elif self.mode == RewriteMode.FROZEN_LLM:
-            return self._rewrite_with_frozen_llm(query, task_type, few_shot_examples)
+        original_query = query
 
-        elif self.mode == RewriteMode.TRAINABLE:
-            return self._rewrite_with_trainable(query, task_type)
+        # Try multiple rewriting strategies
+        for attempt in range(max_retries):
+            try:
+                if self.mode == RewriteMode.FROZEN_LLM:
+                    rewritten = self._rewrite_with_llm(query, task_type, few_shot_examples, attempt)
+                elif self.mode == RewriteMode.TRAINABLE:
+                    rewritten = self._rewrite_with_trainable(query, task_type)
+                else:
+                    rewritten = query
 
-        return query
+                # Validate the rewritten query
+                if self._is_valid_rewrite(original_query, rewritten):
+                    self.rewrite_history.append({
+                        "original": original_query,
+                        "rewritten": rewritten,
+                        "attempt": attempt + 1
+                    })
+                    logger.info(f"Query rewritten: '{original_query[:50]}...' -> '{rewritten[:50]}...'")
+                    return rewritten
 
-    def _rewrite_with_frozen_llm(
+                # If invalid, try again with different strategy
+                query = self._fallback_rewrite(original_query, attempt)
+
+            except Exception as e:
+                logger.error(f"Error in query rewriting (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    return original_query
+
+        return original_query
+
+    def _rewrite_with_llm(
             self,
             query: str,
             task_type: str,
-            few_shot_examples: Optional[List[Tuple[str, str]]] = None
+            examples: Optional[List[Tuple[str, str]]] = None,
+            attempt: int = 0
     ) -> str:
-        """Rewrite query using a frozen LLM with few-shot prompting"""
+        """Rewrite query using LLM with improved prompting"""
         if not self.llm:
-            logger.warning("No LLM provided for frozen rewriter, returning original query")
+            logger.warning("No LLM provided for rewriter")
             return query
 
-        # Build prompt based on paper's approach
-        prompt = self._build_rewrite_prompt(query, task_type, few_shot_examples)
+        # Use different strategies based on attempt
+        strategy = "balanced" if attempt == 0 else "concise"
+        prompt = self._build_improved_prompt(query, task_type, examples, strategy)
 
         try:
             rewritten = self.llm.generate(prompt)
-            # Clean and extract the query
-            rewritten = self._extract_rewritten_query(rewritten)
-            logger.info(f"Query rewritten: '{query}' -> '{rewritten}'")
+            rewritten = self._clean_rewritten_query(rewritten)
+
+            # Post-process the rewritten query
+            rewritten = self._post_process_rewrite(rewritten, query)
             return rewritten
+
         except Exception as e:
-            logger.error(f"Error in query rewriting: {e}")
+            logger.error(f"LLM rewriting failed: {e}")
             return query
 
-    def _rewrite_with_trainable(self, query: str, task_type: str) -> str:
-        """Rewrite query using a trainable model"""
-        # Simplified implementation - in practice you would:
-        # 1. Tokenize input
-        # 2. Run through trained model
-        # 3. Decode output
-        if self.trainable_model:
-            # Actual inference would go here
-            pass
-
-        # For now, return a simple improvement
-        # This is just a placeholder - you should train your own rewriter
-        return self._simple_query_improvement(query)
-
-    def _simple_query_improvement(self, query: str) -> str:
-        """Simple query improvement rules (placeholder for trainable model)"""
-        # Add common question words if missing
-        question_words = ["что", "как", "почему", "когда", "где", "кто"]
-        if not any(word in query.lower() for word in question_words):
-            # Not a question format, add context
-            if "финанс" in query.lower() or "инвест" in query.lower():
-                return f"финансовый вопрос: {query}"
-
-        # Remove unnecessary words
-        stop_words = ["пожалуйста", "расскажите", "объясните", "можно", "ли"]
-        words = query.split()
-        filtered_words = [w for w in words if w.lower() not in stop_words]
-
-        return " ".join(filtered_words) if filtered_words else query
-
-    def _build_rewrite_prompt(
+    def _build_improved_prompt(
             self,
             query: str,
             task_type: str,
-            examples: Optional[List[Tuple[str, str]]] = None
+            examples: Optional[List[Tuple[str, str]]] = None,
+            strategy: str = "balanced"
     ) -> str:
-        """Build prompt for query rewriting based on paper's approach"""
+        """Build improved prompt for query rewriting"""
 
-        if task_type == "qa":
-            instruction = """Перефразируй вопрос для улучшения поиска в финансовой базе знаний. 
-Создай поисковый запрос, который лучше отражает суть вопроса и содержит все ключевые термины."""
+        # Strategy-specific instructions
+        strategies = {
+            "balanced": "Создай сбалансированный поисковый запрос, который содержит ключевые термины и общую суть вопроса.",
+            "concise": "Создай краткий поисковый запрос с максимально релевантными ключевыми словами.",
+            "expansive": "Расширь запрос, включив синонимы и связанные понятия для улучшения полноты поиска."
+        }
 
-            if not examples:
-                # Default few-shot examples for finance QA
-                examples = [
-                    ("Что такое диверсификация портфеля?",
-                     "диверсификация портфеля инвестиций стратегия риски"),
+        instruction = f"""Ты — эксперт по финансовой информации. {strategies.get(strategy, strategies['balanced'])}
 
-                    ("Как рассчитать доходность акций?",
-                     "расчет доходности акций формула методы"),
+Перефразируй вопрос так, чтобы он лучше подходил для поиска в базе знаний по финансам.
+Используй специальные финансовые термины и их синонимы."""
 
-                    ("Какие бывают виды облигаций?",
-                     "типы виды облигации государственные корпоративные")
-                ]
+        # Domain-specific guidelines
+        domain_guidelines = ""
+        if self.domain == "finance":
+            domain_guidelines = """Учти особенности финансовой терминологии:
+- Используй точные термины: "дивиденды", "ликвидность", "хеджирование", "капитализация"
+- Включай аббревиатуры: "NPV", "ROI", "ETF", "IPO"
+- Добавляй контекст: "формула расчета", "пример использования", "сравнение видов"
+"""
 
-        else:  # multiple_choice or other
-            instruction = """Создай поисковый запрос для поиска информации, необходимой для ответа на вопрос с вариантами ответов."""
+        # Few-shot examples
+        if not examples:
+            examples = self._get_domain_examples()
 
-            if not examples:
-                examples = [
-                    ("Что такое NPV? а) Net Present Value б) Net Profit Value в) Net Portfolio Value",
-                     "NPV Net Present Value определение чистая приведенная стоимость")
-                ]
-
-        # Build demonstrations
         demonstrations = ""
         if examples:
-            for original, rewritten in examples:
+            for original, rewritten in examples[:3]:  # Use only 3 best examples
                 demonstrations += f"Вопрос: {original}\n"
                 demonstrations += f"Поисковый запрос: {rewritten}\n\n"
 
+        # Build prompt
         prompt = f"""{instruction}
 
+{domain_guidelines}
+
+Примеры преобразования вопросов в поисковые запросы:
 {demonstrations}Вопрос: {query}
 Поисковый запрос:"""
 
         return prompt
 
-    def _extract_rewritten_query(self, text: str) -> str:
-        """Extract the rewritten query from LLM response"""
-        # Remove any markdown code blocks
+    def _get_domain_examples(self) -> List[Tuple[str, str]]:
+        """Get domain-specific examples"""
+        if self.domain == "finance":
+            return [
+                ("Что такое диверсификация портфеля?",
+                 "диверсификация инвестиционный портфель стратегия распределение рисков доходность"),
+
+                ("Как рассчитать доходность акций за год?",
+                 "формула расчет доходности акций годовая прибыль дивиденды курсовая стоимость"),
+
+                ("Какие виды облигаций бывают?",
+                 "типы виды облигации государственные корпоративные муниципальные купонные дисконтные"),
+
+                ("Что такое коэффициент Шарпа?",
+                 "коэффициент Шарпа Sharpe ratio формула расчет риск доходность портфель"),
+
+                ("Как работает маржинальная торговля?",
+                 "маржинальная торговля кредитное плечо залог маржин-колл риски"),
+            ]
+        return []
+
+    def _clean_rewritten_query(self, text: str) -> str:
+        """Clean and extract the rewritten query"""
         text = text.strip()
-        text = re.sub(r'```[a-z]*\n', '', text)
-        text = text.replace('```', '')
 
-        # Look for the query in the response
-        lines = text.strip().split('\n')
+        # Remove markdown and code blocks
+        text = re.sub(r'```[a-z]*\n?', '', text)
+        text = re.sub(r'`', '', text)
+
+        # Look for the query in common patterns
+        patterns = [
+            r'Поисковый запрос:\s*(.*?)(?:\n|$)',
+            r'Запрос:\s*(.*?)(?:\n|$)',
+            r'Query:\s*(.*?)(?:\n|$)',
+            r'Результат:\s*(.*?)(?:\n|$)',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                result = match.group(1).strip()
+                if result and len(result) > 5:
+                    return result
+
+        # Fallback: return the text without quotes
+        text = re.sub(r'["\'«»]', '', text)
+
+        # Return the first line if multiple lines
+        lines = text.split('\n')
         for line in lines:
-            line_lower = line.lower()
-            if 'запрос:' in line_lower or 'query:' in line_lower:
-                parts = line.split(':', 1)
-                if len(parts) > 1:
-                    return parts[1].strip()
+            line = line.strip()
+            if line and len(line) > 5:
+                return line
 
-        # If no clear marker, return the last non-empty line
-        for line in reversed(lines):
-            if line.strip():
-                return line.strip()
+        return text if text else ""
 
-        return text.strip() if text.strip() else text
+    def _post_process_rewrite(self, rewritten: str, original: str) -> str:
+        """Post-process the rewritten query"""
+
+        # Remove stopwords but keep important financial terms
+        stopwords = ["пожалуйста", "расскажите", "объясните", "можно", "ли", "как", "что", "где", "когда"]
+        words = rewritten.split()
+        filtered_words = [w for w in words if w.lower() not in stopwords]
+
+        # Add domain keywords if missing
+        if self.domain in self.domain_keywords:
+            has_domain_terms = any(keyword in rewritten.lower() for keyword in self.domain_keywords[self.domain])
+            if not has_domain_terms and any(
+                    keyword in original.lower() for keyword in self.domain_keywords[self.domain]):
+                # Add the first matching domain keyword
+                for keyword in self.domain_keywords[self.domain]:
+                    if keyword in original.lower():
+                        filtered_words.append(keyword)
+                        break
+
+        # Ensure we have at least 2 words
+        if len(filtered_words) < 2:
+            # Fallback to original with improvements
+            original_words = original.split()
+            original_words = [w for w in original_words if w.lower() not in stopwords]
+            return " ".join(original_words[:5])
+
+        return " ".join(filtered_words[:10])  # Limit to 10 words
+
+    def _is_valid_rewrite(self, original: str, rewritten: str) -> bool:
+        """Validate if the rewrite is reasonable"""
+        if not rewritten or len(rewritten) < 3:
+            return False
+
+        # Check if it's too similar to original (should be different)
+        if rewritten.lower() == original.lower():
+            return False
+
+        # Check if it's too short or too long
+        if len(rewritten) < len(original) * 0.3:  # Less than 30% of original
+            return False
+
+        # Check if it contains meaningful content
+        words = rewritten.split()
+        if len(words) < 2:
+            return False
+
+        return True
+
+    def _fallback_rewrite(self, query: str, attempt: int) -> str:
+        """Fallback rewriting strategies"""
+        if attempt == 0:
+            # Strategy 1: Extract keywords
+            words = query.lower().split()
+            keywords = [w for w in words if len(w) > 3 and w not in ["что", "как", "почему", "когда"]]
+            return " ".join(keywords[:5])
+        else:
+            # Strategy 2: Add domain context
+            return f"{self.domain} {query}"
+
+    def _rewrite_with_trainable(self, query: str, task_type: str) -> str:
+        """Rewrite using trainable model (placeholder)"""
+        # Implement if you have a trained model
+        return query
+
+    def analyze_rewrites(self) -> Dict[str, Any]:
+        """Analyze rewrite history for debugging"""
+        if not self.rewrite_history:
+            return {"total": 0}
+
+        changes = []
+        for entry in self.rewrite_history:
+            original_len = len(entry["original"].split())
+            rewritten_len = len(entry["rewritten"].split())
+            changes.append({
+                "original": entry["original"],
+                "rewritten": entry["rewritten"],
+                "length_change": rewritten_len - original_len,
+                "words_added": len(set(entry["rewritten"].split()) - set(entry["original"].split())),
+                "words_removed": len(set(entry["original"].split()) - set(entry["rewritten"].split()))
+            })
+
+        return {
+            "total": len(self.rewrite_history),
+            "avg_length_change": np.mean([c["length_change"] for c in changes]) if changes else 0,
+            "examples": changes[:5]  # First 5 examples
+        }
 
 
 @dataclass
 class HybridDocument:
-    """Container for documents with both vector and BM25 scores"""
+    """Container for hybrid search results"""
     id: Any
     text: str
     source: str = ""
     vector_score: float = 0.0
     bm25_score: float = 0.0
+    vector_rank: int = 0
+    bm25_rank: int = 0
     is_bm25_only: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
-    combined_score: float = 0.0  # Added to avoid AttributeError
+    combined_score: float = 0.0
+    rrf_score: float = 0.0
 
 
-DEFAULT_SYSTEM_PROMPT = """Ты — помощник, отвечающий строго на основе предоставленного контекста.
+# Optimized prompts for better performance
+OPTIMIZED_SYSTEM_PROMPT = """Ты — финансовый эксперт, отвечающий строго на основе предоставленного контекста.
 
-Правила:
-1) Используй только факты из КОНТЕКСТА. Если в контексте нет ответа — скажи: "В предоставленных материалах нет информации".
-2) В конце каждого важного утверждения ставь ссылку на источник в формате [1], [2] — номер соответствующего фрагмента из КОНТЕКСТА.
-3) Пиши кратко и по делу. Если вопрос многосоставной — ответь по пунктам.
-4) Не раскрывай цепочку рассуждений. Дай только итоговый ответ.
+КРИТИЧЕСКИЕ ПРАВИЛА:
+1) Отвечай ТОЛЬКО на основе информации из КОНТЕКСТА.
+2) Если информации недостаточно — прямо скажи: "В предоставленных материалах нет информации по этому вопросу."
+3) Все утверждения подтверждай ссылками на источники: [1], [2], и т.д.
+4) Будь краток, точен и информативен.
+5) Используй профессиональную финансовую терминологию.
 """
 
-DEFAULT_USER_PROMPT = """КОНТЕКСТ:
+OPTIMIZED_USER_PROMPT = """КОНТЕКСТ:
 {context}
 
 ВОПРОС:
 {question}
 
-ТРЕБОВАНИЯ К ОТВЕТУ:
-- Ответь по делу.
-- После каждого ключевого утверждения добавляй ссылку на фрагмент [1], [2], ...
-- Если данных недостаточно — так и скажи.
+ОТВЕТЬ, ИСПОЛЬЗУЯ ЭТИ ПРАВИЛА:
+1. Если ответ есть в контексте — дай его с указанием источников.
+2. Если информации недостаточно — так и скажи.
+3. Не добавляй информацию не из контекста.
+4. Форматируй ответ четко и структурированно.
 
-ОТВЕТ:
-"""
+ОТВЕТ:"""
 
 
 class RAGModule:
@@ -270,16 +418,22 @@ class RAGModule:
             model_name: Optional[str] = None,
             device: Optional[str] = None,
             llm: Optional[MistralLLM] = None,
-            system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-            user_prompt: str = DEFAULT_USER_PROMPT,
+            system_prompt: str = OPTIMIZED_SYSTEM_PROMPT,
+            user_prompt: str = OPTIMIZED_USER_PROMPT,
             qdrant_url: Optional[str] = None,
             qdrant_api_key: Optional[str] = None,
             retrieval_mode: RetrievalMode = RetrievalMode.HYBRID,
             rewrite_mode: RewriteMode = RewriteMode.NONE,
-            bm25_prefetch: int = 100,
-            vector_weight: float = 0.7,
+            hybrid_method: HybridCombinationMethod = HybridCombinationMethod.RRF,
+            bm25_prefetch: int = 200,  # Increased for hybrid
+            vector_prefetch: int = 100,  # Increased for hybrid
+            vector_weight: float = 0.5,  # Balanced weight
             enable_mmr: bool = True,
-            mmr_lambda: float = 0.7,
+            mmr_lambda: float = 0.5,  # More balanced
+            rrf_k: int = 60,  # RRF constant
+            limit: int = 10,  # Default limit increased to 10
+            score_threshold: float = 0.1,  # Lower threshold for more results
+            domain: str = "finance"
     ):
         # Initialize Qdrant client
         qdrant_url = qdrant_url or os.getenv("QDRANT_URL")
@@ -306,11 +460,17 @@ class RAGModule:
 
         self.collection = collection
         self.retrieval_mode = retrieval_mode
-        self.rewrite_mode = rewrite_mode  # Store rewrite_mode
+        self.rewrite_mode = rewrite_mode
+        self.hybrid_method = hybrid_method
         self.bm25_prefetch = bm25_prefetch
+        self.vector_prefetch = vector_prefetch
         self.vector_weight = vector_weight
         self.enable_mmr = enable_mmr
         self.mmr_lambda = mmr_lambda
+        self.rrf_k = rrf_k
+        self.limit = limit
+        self.score_threshold = score_threshold
+        self.domain = domain
 
         # Initialize embedding model
         model_name = model_name or os.getenv("EMBEDDING_MODEL")
@@ -341,17 +501,21 @@ class RAGModule:
                     temperature=Config.MISTRAL_TEMPERATURE,
                 )
 
-        # Initialize Query Rewriter
+        # Initialize Query Rewriter with improved settings
         self.rewriter = QueryRewriter(
             mode=rewrite_mode,
-            llm=self.llm,  # Use same LLM for rewriting
-            trainable_model_path=None  # Set if you have a trained model
+            llm=self.llm,
+            trainable_model_path=None,
+            domain=domain
         )
 
+        # Performance tracking
+        self.retrieval_stats = []
+
     def _initialize_bm25_index(self):
-        """Initialize BM25 index from full corpus in Qdrant"""
+        """Initialize BM25 index with improved tokenization"""
         try:
-            logger.info("Building BM25 index from full corpus...")
+            logger.info("Building BM25 index from corpus...")
 
             all_points = []
             offset = 0
@@ -381,7 +545,7 @@ class RAGModule:
 
             for point in all_points:
                 text = point.payload.get("text", "")
-                if text and len(text.strip()) > 0:
+                if text and len(text.strip()) > 10:  # Minimum length
                     self.bm25_docs.append(text)
                     self.bm25_metadata.append({
                         "id": point.id,
@@ -389,9 +553,19 @@ class RAGModule:
                     })
 
             if self.bm25_docs:
-                tokenized_docs = [_tokenize(doc) for doc in self.bm25_docs]
-                self.bm25_index = BM25Okapi(tokenized_docs)
-                logger.info(f"✅ BM25 index built with {len(self.bm25_docs)} documents")
+                # Improved tokenization for Russian text
+                tokenized_docs = []
+                for doc in self.bm25_docs:
+                    tokens = _tokenize(doc)
+                    if tokens:
+                        tokenized_docs.append(tokens)
+
+                if tokenized_docs:
+                    self.bm25_index = BM25Okapi(tokenized_docs)
+                    logger.info(f"✅ BM25 index built with {len(self.bm25_docs)} documents")
+                else:
+                    logger.warning("No valid tokens for BM25 index")
+                    self.bm25_index = None
             else:
                 logger.warning("No documents found for BM25 index")
                 self.bm25_index = None
@@ -400,80 +574,26 @@ class RAGModule:
             logger.error(f"Failed to initialize BM25 index: {e}")
             self.bm25_index = None
 
-    def refresh_bm25_index(self):
-        """Refresh BM25 index (call after adding new documents to Qdrant)"""
-        if self.retrieval_mode in [RetrievalMode.BM25_ONLY, RetrievalMode.HYBRID] and self.client:
-            self._initialize_bm25_index()
-
     @property
     def model(self) -> Optional[SentenceTransformer]:
         if not self._model_enabled:
             return None
         if self._model is None:
-            logger.info(f"Загрузка модели эмбеддингов: {self.model_name}")
+            logger.info(f"Loading embedding model: {self.model_name}")
             if self.device:
                 self._model = SentenceTransformer(self.model_name, device=self.device)
             else:
                 self._model = SentenceTransformer(self.model_name, device="cpu")
-            logger.info(f"✅ Модель {self.model_name} загружена")
+            logger.info(f"✅ Model {self.model_name} loaded")
         return self._model
 
     def _embed_query(self, query: str) -> np.ndarray:
+        """Embed query with E5 format if needed"""
         if not self._model_enabled or self.model is None:
-            raise RuntimeError(
-                "Модель эмбеддингов не загружена. Установите EMBEDDING_MODEL в .env или передайте model_name в RAGModule")
+            raise RuntimeError("Embedding model not loaded")
         q = f"query: {query}" if self.model_is_e5 else query
         vec = self.model.encode(q, normalize_embeddings=True)
         return np.asarray(vec, dtype=np.float32)
-
-    def _embed_texts(self, texts: List[str]) -> np.ndarray:
-        if not self._model_enabled or self.model is None:
-            raise RuntimeError(
-                "Модель эмбеддингов не загружена. Установите EMBEDDING_MODEL в .env или передайте model_name в RAGModule")
-        if self.model_is_e5:
-            texts = [f"passage: {t}" for t in texts]
-        vecs = self.model.encode(texts, normalize_embeddings=True, batch_size=32, show_progress_bar=False)
-        return np.asarray(vecs, dtype=np.float32)
-
-    def _mmr_select(
-            self,
-            query_vec: np.ndarray,
-            cand_texts: List[str],
-            cand_scores: List[float],
-            top_k: int,
-            lambda_mult: float = 0.7,
-    ) -> List[int]:
-        if not cand_texts or not cand_scores:
-            return []
-
-        cand_vecs = self._embed_texts(cand_texts)
-
-        selected: List[int] = []
-        remaining = list(range(len(cand_texts)))
-
-        first = int(np.argmax(np.asarray(cand_scores)))
-        selected.append(first)
-        remaining.remove(first)
-
-        while remaining and len(selected) < top_k:
-            best_idx = None
-            best_val = -1e9
-
-            for idx in remaining:
-                rel = _cosine_sim(query_vec, cand_vecs[idx])
-                div = max(_cosine_sim(cand_vecs[idx], cand_vecs[s]) for s in selected)
-                mmr = lambda_mult * rel - (1 - lambda_mult) * div
-                if mmr > best_val:
-                    best_val = mmr
-                    best_idx = idx
-
-            if best_idx is not None:
-                selected.append(best_idx)
-                remaining.remove(best_idx)
-            else:
-                break
-
-        return selected
 
     def _get_vector_results(
             self,
@@ -482,7 +602,7 @@ class RAGModule:
             score_threshold: Optional[float],
             qdrant_filter: Optional[qm.Filter]
     ) -> List[HybridDocument]:
-        """Get vector search results from Qdrant"""
+        """Get vector search results"""
         if not self.client:
             return []
 
@@ -499,20 +619,22 @@ class RAGModule:
             return []
 
         docs = []
-        for r in results.points:
+        for rank, r in enumerate(results.points, 1):
             docs.append(HybridDocument(
                 id=r.id,
                 text=r.payload.get("text", ""),
                 source=r.payload.get("source", ""),
                 vector_score=float(r.score),
                 bm25_score=0.0,
+                vector_rank=rank,
+                bm25_rank=0,
                 is_bm25_only=False,
                 metadata=r.payload
             ))
         return docs
 
     def _get_bm25_results(self, query: str, prefetch: int) -> List[HybridDocument]:
-        """Get BM25 search results from full corpus"""
+        """Get BM25 search results"""
         if not self.bm25_index or not query.strip():
             return []
 
@@ -522,107 +644,172 @@ class RAGModule:
 
         bm25_scores = self.bm25_index.get_scores(query_tokens)
 
-        top_n = min(len(bm25_scores), prefetch)
-        top_indices = np.argsort(bm25_scores)[::-1][:top_n]
+        # Get top N results with scores > 0
+        valid_indices = [i for i, score in enumerate(bm25_scores) if score > 0]
+        if not valid_indices:
+            return []
+
+        # Sort by score
+        sorted_indices = sorted(valid_indices, key=lambda i: bm25_scores[i], reverse=True)
+        top_n = min(len(sorted_indices), prefetch)
+        top_indices = sorted_indices[:top_n]
 
         docs = []
-        for idx in top_indices:
-            score = float(bm25_scores[idx])
-            if score > 0:
-                metadata = self.bm25_metadata[idx]
-                docs.append(HybridDocument(
-                    id=metadata["id"],
-                    text=self.bm25_docs[idx],
-                    source=metadata["payload"].get("source", ""),
-                    vector_score=0.0,
-                    bm25_score=score,
-                    is_bm25_only=True,
-                    metadata=metadata["payload"]
-                ))
+        for rank, idx in enumerate(top_indices, 1):
+            metadata = self.bm25_metadata[idx]
+            docs.append(HybridDocument(
+                id=metadata["id"],
+                text=self.bm25_docs[idx],
+                source=metadata["payload"].get("source", ""),
+                vector_score=0.0,
+                bm25_score=float(bm25_scores[idx]),
+                vector_rank=0,
+                bm25_rank=rank,
+                is_bm25_only=True,
+                metadata=metadata["payload"]
+            ))
         return docs
 
-    def _combine_results(
+    def _combine_weighted_sum(
             self,
             vector_docs: List[HybridDocument],
             bm25_docs: List[HybridDocument],
     ) -> List[HybridDocument]:
-        """Combine vector and BM25 results"""
+        """Combine using weighted sum with better normalization"""
+
+        # Collect all scores for global normalization
+        all_vector_scores = [d.vector_score for d in vector_docs if d.vector_score > 0]
+        all_bm25_scores = [d.bm25_score for d in bm25_docs if d.bm25_score > 0]
+
+        if not all_vector_scores and not all_bm25_scores:
+            return []
+
+        # Global normalization factors
+        vector_min = min(all_vector_scores) if all_vector_scores else 0
+        vector_max = max(all_vector_scores) if all_vector_scores else 1
+        vector_range = vector_max - vector_min if vector_max > vector_min else 1
+
+        bm25_min = min(all_bm25_scores) if all_bm25_scores else 0
+        bm25_max = max(all_bm25_scores) if all_bm25_scores else 1
+        bm25_range = bm25_max - bm25_min if bm25_max > bm25_min else 1
+
+        # Combine documents
         docs_by_id = {}
 
         for doc in vector_docs:
-            docs_by_id[doc.id] = doc
+            norm_vector = (doc.vector_score - vector_min) / vector_range if vector_range > 0 else 0
+            docs_by_id[doc.id] = {
+                "doc": doc,
+                "norm_vector": norm_vector,
+                "norm_bm25": 0.0
+            }
 
         for doc in bm25_docs:
+            norm_bm25 = (doc.bm25_score - bm25_min) / bm25_range if bm25_range > 0 else 0
             if doc.id in docs_by_id:
-                existing = docs_by_id[doc.id]
-                existing.bm25_score = doc.bm25_score
-                existing.is_bm25_only = False
+                docs_by_id[doc.id]["norm_bm25"] = norm_bm25
+                docs_by_id[doc.id]["doc"].bm25_score = doc.bm25_score
+                docs_by_id[doc.id]["doc"].bm25_rank = doc.bm25_rank
+                docs_by_id[doc.id]["doc"].is_bm25_only = False
             else:
-                docs_by_id[doc.id] = doc
+                docs_by_id[doc.id] = {
+                    "doc": doc,
+                    "norm_vector": 0.0,
+                    "norm_bm25": norm_bm25
+                }
 
+        # Calculate combined scores
         combined_docs = []
-        for doc in docs_by_id.values():
-            # Normalize scores
-            if vector_docs:
-                vector_scores = [d.vector_score for d in vector_docs]
-                if len(vector_scores) > 0 and max(vector_scores) > min(vector_scores):
-                    norm_vector = (doc.vector_score - min(vector_scores)) / (max(vector_scores) - min(vector_scores))
-                else:
-                    norm_vector = doc.vector_score
+        for doc_info in docs_by_id.values():
+            combined_score = (self.vector_weight * doc_info["norm_vector"] +
+                              (1 - self.vector_weight) * doc_info["norm_bm25"])
+
+            doc = doc_info["doc"]
+            doc.combined_score = combined_score
+            combined_docs.append(doc)
+
+        return sorted(combined_docs, key=lambda x: x.combined_score, reverse=True)
+
+    def _combine_rrf(
+            self,
+            vector_docs: List[HybridDocument],
+            bm25_docs: List[HybridDocument],
+            limit: int
+    ) -> List[HybridDocument]:
+        """Combine using Reciprocal Rank Fusion (RRF)"""
+
+        # Create rank mappings
+        vector_ranks = {doc.id: rank for rank, doc in enumerate(vector_docs, 1)}
+        bm25_ranks = {doc.id: rank for rank, doc in enumerate(bm25_docs, 1)}
+
+        # Get all unique documents
+        all_docs = {}
+        for doc in vector_docs:
+            all_docs[doc.id] = doc
+
+        for doc in bm25_docs:
+            if doc.id not in all_docs:
+                all_docs[doc.id] = doc
             else:
-                norm_vector = 0.0
+                # Update BM25 info for existing doc
+                existing = all_docs[doc.id]
+                existing.bm25_score = doc.bm25_score
+                existing.bm25_rank = doc.bm25_rank
+                existing.is_bm25_only = False
 
-            if bm25_docs:
-                bm25_scores = [d.bm25_score for d in bm25_docs]
-                if len(bm25_scores) > 0 and max(bm25_scores) > min(bm25_scores):
-                    norm_bm25 = (doc.bm25_score - min(bm25_scores)) / (max(bm25_scores) - min(bm25_scores))
-                else:
-                    norm_bm25 = doc.bm25_score
-            else:
-                norm_bm25 = 0.0
+        # Calculate RRF scores
+        for doc_id, doc in all_docs.items():
+            rrf_score = 0.0
 
-            # Apply vector weight
-            combined_score = (self.vector_weight * norm_vector) + ((1 - self.vector_weight) * norm_bm25)
+            # Add vector rank contribution
+            vector_rank = vector_ranks.get(doc_id)
+            if vector_rank is not None:
+                doc.vector_rank = vector_rank
+                rrf_score += 1.0 / (vector_rank + self.rrf_k)
 
-            combined_doc = HybridDocument(
-                id=doc.id,
-                text=doc.text,
-                source=doc.source,
-                vector_score=doc.vector_score,
-                bm25_score=doc.bm25_score,
-                is_bm25_only=doc.is_bm25_only,
-                metadata=doc.metadata,
-                combined_score=combined_score
-            )
-            combined_docs.append(combined_doc)
+            # Add BM25 rank contribution
+            bm25_rank = bm25_ranks.get(doc_id)
+            if bm25_rank is not None:
+                doc.bm25_rank = bm25_rank
+                rrf_score += 1.0 / (bm25_rank + self.rrf_k)
 
-        return combined_docs
+            doc.rrf_score = rrf_score
+
+        # Sort by RRF score
+        sorted_docs = sorted(all_docs.values(), key=lambda x: x.rrf_score, reverse=True)
+
+        # Update combined_score to RRF score for consistency
+        for doc in sorted_docs:
+            doc.combined_score = doc.rrf_score
+
+        return sorted_docs[:limit]
 
     def retrieve(
             self,
             query: str,
-            limit: int = 7,
-            prefetch: int = 25,
-            score_threshold: Optional[float] = 0.2,
+            limit: int = None,
+            prefetch: int = None,
+            score_threshold: Optional[float] = None,
             qdrant_filter: Optional[qm.Filter] = None,
             task_type: str = "qa",
+            track_stats: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        Hybrid retrieval with optional query rewriting.
-
-        Args:
-            query: Original query
-            limit: Number of final results
-            prefetch: Number of candidates to prefetch
-            score_threshold: Minimum score threshold
-            qdrant_filter: Qdrant filter
-            task_type: Type of task ("qa", "multiple_choice")
+        Improved hybrid retrieval with better query rewriting
         """
-        # Step 1: Query Rewriting
+        start_time = time.time() if track_stats else None
+
+        # Use instance defaults if not provided
+        limit = limit or self.limit
+        prefetch = prefetch or self.vector_prefetch
+        score_threshold = score_threshold or self.score_threshold
+
+        # Step 1: Improved Query Rewriting
         original_query = query
         if self.rewriter.mode != RewriteMode.NONE:
             query = self.rewriter.rewrite(query, task_type)
-            logger.info(f"Query rewriting: '{original_query}' -> '{query}'")
+            if track_stats:
+                logger.debug(f"Query rewritten: '{original_query[:50]}...' -> '{query[:50]}...'")
 
         if not self.client:
             return []
@@ -631,43 +818,50 @@ class RAGModule:
         vector_docs = []
         bm25_docs = []
 
+        # Adjust prefetch for hybrid to get more candidates
+        if self.retrieval_mode == RetrievalMode.HYBRID:
+            vector_prefetch = prefetch * 2
+            bm25_prefetch = self.bm25_prefetch * 2
+        else:
+            vector_prefetch = prefetch
+            bm25_prefetch = self.bm25_prefetch
+
         if self.retrieval_mode in [RetrievalMode.DENSE_ONLY, RetrievalMode.HYBRID]:
             if not self._model_enabled:
-                raise RuntimeError(
-                    "Модель эмбеддингов не настроена. Установите EMBEDDING_MODEL в .env для использования векторного поиска")
+                raise RuntimeError("Embedding model not configured")
             query_vec = self._embed_query(query)
             vector_docs = self._get_vector_results(
                 query_vec=query_vec,
-                prefetch=prefetch if self.enable_mmr else limit,
+                prefetch=vector_prefetch,
                 score_threshold=score_threshold,
                 qdrant_filter=qdrant_filter
             )
 
         if self.retrieval_mode in [RetrievalMode.BM25_ONLY, RetrievalMode.HYBRID]:
             if self.bm25_index:
-                bm25_docs = self._get_bm25_results(query, prefetch=self.bm25_prefetch)
+                bm25_docs = self._get_bm25_results(query, prefetch=bm25_prefetch)
             else:
                 logger.warning("BM25 index not available")
 
-        # Step 3: Combine results (if hybrid)
+        # Step 3: Combine results
         if self.retrieval_mode == RetrievalMode.HYBRID:
-            combined_docs = self._combine_results(vector_docs, bm25_docs)
+            if self.hybrid_method == HybridCombinationMethod.RRF:
+                combined_docs = self._combine_rrf(vector_docs, bm25_docs, limit)
+            else:
+                combined_docs = self._combine_weighted_sum(vector_docs, bm25_docs)[:limit]
         elif self.retrieval_mode == RetrievalMode.DENSE_ONLY:
-            combined_docs = vector_docs
+            combined_docs = vector_docs[:limit]
         else:  # BM25_ONLY
-            combined_docs = bm25_docs
+            combined_docs = bm25_docs[:limit]
 
         if not combined_docs:
             return []
 
-        # Step 4: Apply MMR or simple sort
-        if self.enable_mmr and len(
-                combined_docs) > 1 and self.retrieval_mode != RetrievalMode.BM25_ONLY and self._model_enabled:
+        # Step 4: Apply MMR for diversity (optional)
+        if self.enable_mmr and len(combined_docs) > 3 and self._model_enabled:
             query_vec = self._embed_query(query)
             texts = [doc.text for doc in combined_docs]
-            scores = [doc.combined_score if hasattr(doc, 'combined_score') and doc.combined_score > 0 else
-                      (doc.vector_score if self.retrieval_mode == RetrievalMode.DENSE_ONLY else doc.bm25_score)
-                      for doc in combined_docs]
+            scores = [doc.combined_score for doc in combined_docs]
 
             pick_idx = self._mmr_select(
                 query_vec=query_vec,
@@ -678,60 +872,109 @@ class RAGModule:
             )
             selected = [combined_docs[i] for i in pick_idx]
         else:
-            # Simple sort by appropriate score
-            if self.retrieval_mode == RetrievalMode.DENSE_ONLY:
-                selected = sorted(combined_docs, key=lambda x: x.vector_score, reverse=True)[:limit]
-            elif self.retrieval_mode == RetrievalMode.BM25_ONLY:
-                selected = sorted(combined_docs, key=lambda x: x.bm25_score, reverse=True)[:limit]
-            else:  # HYBRID
-                selected = sorted(combined_docs, key=lambda x: x.combined_score, reverse=True)[:limit]
+            selected = combined_docs[:limit]
+
+        # Track statistics
+        if track_stats:
+            end_time = time.time()
+            self.retrieval_stats.append({
+                "query": original_query,
+                "rewritten": query,
+                "vector_count": len(vector_docs),
+                "bm25_count": len(bm25_docs),
+                "combined_count": len(selected),
+                "time_ms": (end_time - start_time) * 1000,
+                "mode": self.retrieval_mode.value,
+                "rewrite_mode": self.rewriter.mode.value
+            })
 
         # Step 5: Format return
-        return [
-            {
+        results = []
+        for doc in selected:
+            result = {
                 "content": doc.text,
-                "score": (doc.combined_score if self.retrieval_mode == RetrievalMode.HYBRID else
-                          (doc.vector_score if self.retrieval_mode == RetrievalMode.DENSE_ONLY else doc.bm25_score)),
+                "score": doc.combined_score,
                 "source": doc.source,
                 "metadata": {
                     "vector_score": doc.vector_score,
                     "bm25_score": doc.bm25_score,
+                    "vector_rank": doc.vector_rank,
+                    "bm25_rank": doc.bm25_rank,
+                    "rrf_score": getattr(doc, 'rrf_score', 0.0),
                     "is_bm25_only": doc.is_bm25_only,
                     "original_query": original_query,
                     "rewritten_query": query,
                 }
             }
-            for doc in selected
-        ]
+            results.append(result)
 
-    def build_prompt(self, question: str, chunks: List[RAGChunk]) -> str:
-        context = _format_context(chunks)
-        return self.system_prompt + "\n\n" + self.user_prompt.format(context=context, question=question)
+        return results
 
-    def generate(self, prompt: str) -> str:
-        if not self.llm:
-            raise RuntimeError("LLM client is not set. Pass llm=... into RAGModule.")
-        try:
-            return self.llm.generate(prompt)
-        except Exception as e:
-            error_msg = str(e)
-            if "401" in error_msg or "Unauthorized" in error_msg:
-                raise RuntimeError(
-                    f"Ошибка аутентификации Mistral API. "
-                    f"Проверьте, что MISTRAL_API_KEY установлен правильно. "
-                    f"Ошибка: {error_msg}"
-                ) from e
-            raise
+    def _mmr_select(
+            self,
+            query_vec: np.ndarray,
+            cand_texts: List[str],
+            cand_scores: List[float],
+            top_k: int,
+            lambda_mult: float = 0.5,
+    ) -> List[int]:
+        """MMR selection with balanced diversity"""
+        if len(cand_texts) <= 2:
+            return list(range(min(len(cand_texts), top_k)))
+
+        # Embed candidate texts
+        cand_vecs = self._embed_texts(cand_texts)
+
+        selected = []
+        remaining = list(range(len(cand_texts)))
+
+        # Start with highest score
+        first = int(np.argmax(np.asarray(cand_scores)))
+        selected.append(first)
+        remaining.remove(first)
+
+        while remaining and len(selected) < top_k:
+            best_idx = None
+            best_mmr = -1e9
+
+            for idx in remaining:
+                # Relevance to query
+                rel = _cosine_sim(query_vec, cand_vecs[idx])
+
+                # Max similarity to already selected
+                if selected:
+                    max_sim = max(_cosine_sim(cand_vecs[idx], cand_vecs[s]) for s in selected)
+                else:
+                    max_sim = 0
+
+                # MMR formula
+                mmr = lambda_mult * rel - (1 - lambda_mult) * max_sim
+
+                if mmr > best_mmr:
+                    best_mmr = mmr
+                    best_idx = idx
+
+            if best_idx is not None:
+                selected.append(best_idx)
+                remaining.remove(best_idx)
+            else:
+                break
+
+        return selected
 
     def answer(
             self,
             question: str,
-            limit: int = 5,
-            prefetch: int = 25,
-            score_threshold: Optional[float] = 0.2,
+            limit: int = None,
+            prefetch: int = None,
+            score_threshold: Optional[float] = None,
             qdrant_filter: Optional[qm.Filter] = None,
             task_type: str = "qa",
     ) -> Dict[str, Any]:
+        """Generate answer with improved retrieval"""
+
+        limit = limit or self.limit
+
         chunks_data = self.retrieve(
             query=question,
             limit=limit,
@@ -778,209 +1021,117 @@ class RAGModule:
                 "rewritten": chunks_data[0]["metadata"]["rewritten_query"],
                 "retrieval_mode": self.retrieval_mode.value,
                 "rewrite_mode": self.rewriter.mode.value
+            },
+            "retrieval_stats": {
+                "total_chunks": len(chunks),
+                "avg_score": sum(c.score for c in chunks) / len(chunks) if chunks else 0,
+                "min_score": min(c.score for c in chunks) if chunks else 0,
+                "max_score": max(c.score for c in chunks) if chunks else 0,
             }
         }
 
-    def run_comparison_test(
-            self,
-            question: str,
-            test_name: str = "Comparison Test"
-    ) -> Dict[str, Any]:
-        """
-        Run a comparison test with different configurations.
-        Based on the paper's evaluation approach.
-        """
-        print("=" * 60)
-        print(f"{test_name}")
-        print("=" * 60)
+    # Keep existing methods for compatibility
+    build_prompt = lambda self, question, chunks: self.system_prompt + "\n\n" + self.user_prompt.format(
+        context=_format_context(chunks), question=question)
 
-        results = {}
-
-        # Test different retrieval modes
-        retrieval_modes = [RetrievalMode.DENSE_ONLY, RetrievalMode.BM25_ONLY, RetrievalMode.HYBRID]
-        rewrite_modes = [RewriteMode.NONE, RewriteMode.FROZEN_LLM]
-
-        for retrieval_mode in retrieval_modes:
-            for rewrite_mode in rewrite_modes:
-                # Skip combinations that don't make sense
-                if retrieval_mode == RetrievalMode.DENSE_ONLY and rewrite_mode == RewriteMode.TRAINABLE:
-                    continue  # Would need trainable model
-
-                print(f"\n🔍 Testing: {retrieval_mode.value} + {rewrite_mode.value}")
-
-                # Create temporary RAG instance with specific configuration
-                temp_rag = RAGModule(
-                    collection=self.collection,
-                    model_name=self.model_name,
-                    llm=self.llm,
-                    retrieval_mode=retrieval_mode,
-                    rewrite_mode=rewrite_mode,
-                    vector_weight=self.vector_weight,
-                    enable_mmr=self.enable_mmr,
-                )
-
-                try:
-                    # Run retrieval
-                    chunks_data = temp_rag.retrieve(
-                        query=question,
-                        limit=3,
-                        task_type="qa"
-                    )
-
-                    # Get answer if we have chunks
-                    if chunks_data:
-                        chunks = [RAGChunk(text=c["content"], score=c["score"]) for c in chunks_data]
-                        prompt = temp_rag.build_prompt(question, chunks)
-                        answer = temp_rag.generate(prompt)
-
-                        # Calculate metrics (simplified)
-                        avg_score = sum(c.score for c in chunks) / len(chunks)
-                        max_score = max(c.score for c in chunks)
-
-                        results[f"{retrieval_mode.value}_{rewrite_mode.value}"] = {
-                            "num_chunks": len(chunks),
-                            "avg_score": avg_score,
-                            "max_score": max_score,
-                            "answer_preview": answer[:200] + "..." if len(answer) > 200 else answer,
-                            "top_chunk": chunks[0].text[:150] + "..." if len(chunks[0].text) > 150 else chunks[0].text,
-                            "rewritten_query": chunks_data[0]["metadata"][
-                                "rewritten_query"] if rewrite_mode != RewriteMode.NONE else question
-                        }
-
-                        print(f"  ✅ Found {len(chunks)} chunks, avg score: {avg_score:.4f}")
-                        if rewrite_mode != RewriteMode.NONE:
-                            print(f"  📝 Rewritten: '{chunks_data[0]['metadata']['rewritten_query']}'")
-                    else:
-                        results[f"{retrieval_mode.value}_{rewrite_mode.value}"] = {
-                            "error": "No results found"
-                        }
-                        print(f"  ❌ No results found")
-
-                except Exception as e:
-                    results[f"{retrieval_mode.value}_{rewrite_mode.value}"] = {
-                        "error": str(e)
-                    }
-                    print(f"  ❌ Error: {e}")
-
-        # Print summary
-        print("\n" + "=" * 60)
-        print("SUMMARY")
-        print("=" * 60)
-
-        # Find best configuration by max_score
-        best_config = None
-        best_score = -1
-
-        for config, data in results.items():
-            if "error" not in data:
-                if data["max_score"] > best_score:
-                    best_score = data["max_score"]
-                    best_config = config
-
-        if best_config:
-            print(f"🏆 Best configuration: {best_config}")
-            print(f"   Max score: {best_score:.4f}")
-            print(f"   Answer preview: {results[best_config]['answer_preview']}")
-
-        return {
-            "question": question,
-            "results": results,
-            "best_config": best_config,
-            "best_score": best_score
-        }
+    generate = lambda self, prompt: self.llm.generate(prompt) if self.llm else ""
 
 
-def comprehensive_test():
-    """Comprehensive test with different configurations"""
+# Helper for evaluation script
+import time
 
-    print("🚀 Comprehensive RAG System Test")
+
+def run_optimized_evaluation():
+    """Run evaluation with optimized configurations"""
+
+    print("🚀 OPTIMIZED RAG EVALUATION")
     print("=" * 60)
 
-    # Initialize base RAG system
-    base_rag = RAGModule(
-        collection="finance_theory",
-        model_name=os.getenv("EMBEDDING_MODEL", ""),
-        retrieval_mode=RetrievalMode.HYBRID,
-        rewrite_mode=RewriteMode.NONE,
-    )
-
-    # Test questions
-    test_questions = [
-        "Что такое диверсификация инвестиционного портфеля?",
-        "Как рассчитать доходность облигаций?",
-        "Какие существуют виды финансовых рисков?",
-        "Что такое коэффициент Шарпа?",
+    # Test configurations
+    configs = [
+        {
+            "name": "Hybrid RRF (Optimized)",
+            "retrieval_mode": RetrievalMode.HYBRID,
+            "rewrite_mode": RewriteMode.NONE,
+            "hybrid_method": HybridCombinationMethod.RRF,
+            "vector_weight": 0.5,
+            "enable_mmr": False,
+            "bm25_prefetch": 200,
+            "vector_prefetch": 100,
+            "limit": 10
+        },
+        {
+            "name": "Dense-only (Baseline)",
+            "retrieval_mode": RetrievalMode.DENSE_ONLY,
+            "rewrite_mode": RewriteMode.NONE,
+            "limit": 10
+        },
+        {
+            "name": "Hybrid RRF + Rewriting",
+            "retrieval_mode": RetrievalMode.HYBRID,
+            "rewrite_mode": RewriteMode.FROZEN_LLM,
+            "hybrid_method": HybridCombinationMethod.RRF,
+            "vector_weight": 0.5,
+            "enable_mmr": False,
+            "limit": 10
+        },
+        {
+            "name": "BM25-only",
+            "retrieval_mode": RetrievalMode.BM25_ONLY,
+            "rewrite_mode": RewriteMode.NONE,
+            "limit": 10
+        },
     ]
 
-    all_results = {}
+    results = {}
 
-    for i, question in enumerate(test_questions, 1):
-        print(f"\n📋 Test {i}: {question}")
-        print("-" * 40)
+    for config in configs:
+        print(f"\n🔧 Testing: {config['name']}")
 
-        results = base_rag.run_comparison_test(question, f"Test {i}")
-        all_results[f"test_{i}"] = results
+        rag = RAGModule(
+            collection="finance_theory",
+            model_name=os.getenv("EMBEDDING_MODEL"),
+            **{k: v for k, v in config.items() if k != 'name'}
+        )
 
-        # Pause between tests
-        if i < len(test_questions):
-            input("\nPress Enter to continue to next test...")
+        # Test on sample questions
+        test_questions = [
+            "Что такое диверсификация инвестиционного портфеля?",
+            "Как рассчитать доходность акций?",
+            "Какие бывают виды облигаций?",
+        ]
 
-    # Generate final report
-    print("\n" + "=" * 60)
-    print("📊 FINAL REPORT")
-    print("=" * 60)
+        config_results = []
+        for q in test_questions:
+            start = time.time()
+            result = rag.answer(q, limit=10)
+            elapsed = time.time() - start
 
-    for test_id, results in all_results.items():
-        print(f"\n{test_id.upper()}: {results['question']}")
-        if results['best_config']:
-            print(f"  Best: {results['best_config']} (score: {results['best_score']:.4f})")
+            config_results.append({
+                "question": q,
+                "answer_length": len(result["answer"]),
+                "chunks_count": len(result["chunks"]),
+                "avg_score": sum(c.score for c in result["chunks"]) / len(result["chunks"]) if result["chunks"] else 0,
+                "time_ms": elapsed * 1000,
+                "rewritten_query": result["query_info"]["rewritten_query"] if "rewritten_query" in result[
+                    "query_info"] else q
+            })
+
+        results[config['name']] = config_results
+
+        # Print summary
+        avg_score = sum(r["avg_score"] for r in config_results) / len(config_results)
+        avg_time = sum(r["time_ms"] for r in config_results) / len(config_results)
+        print(f"  Avg score: {avg_score:.4f}, Avg time: {avg_time:.1f}ms")
+
+        if config['rewrite_mode'] != RewriteMode.NONE:
+            rewrite_stats = rag.rewriter.analyze_rewrites()
+            print(
+                f"  Rewrites: {rewrite_stats['total']}, Avg length change: {rewrite_stats.get('avg_length_change', 0):.1f}")
+
+    return results
 
 
 if __name__ == "__main__":
     load_dotenv()
-
-    # Quick configuration test
-    print("⚡ Quick Configuration Test")
-    print("=" * 60)
-
-    # Test with different configurations
-    test_question = "Какова основная цель страхования?"
-
-    # Configuration 1: Hybrid retrieval without rewriting
-    rag1 = RAGModule(
-        collection="finance_theory",
-        model_name=os.getenv("EMBEDDING_MODEL", ""),
-        retrieval_mode=RetrievalMode.HYBRID,
-        rewrite_mode=RewriteMode.NONE,
-    )
-
-    # Configuration 2: Hybrid retrieval with frozen LLM rewriting
-    rag2 = RAGModule(
-        collection="finance_theory",
-        model_name=os.getenv("EMBEDDING_MODEL", ""),
-        retrieval_mode=RetrievalMode.HYBRID,
-        rewrite_mode=RewriteMode.FROZEN_LLM,
-    )
-
-    # Configuration 3: Dense only with rewriting
-    rag3 = RAGModule(
-        collection="finance_theory",
-        model_name=os.getenv("EMBEDDING_MODEL", ""),
-        retrieval_mode=RetrievalMode.DENSE_ONLY,
-        rewrite_mode=RewriteMode.FROZEN_LLM,
-    )
-
-    for rag, name in [(rag1, "Hybrid (no rewrite)"), (rag2, "Hybrid + rewrite"), (rag3, "Dense + rewrite")]:
-        print(f"\n🔍 {name}:")
-        try:
-            result = rag.answer(test_question, limit=3)
-            print(f"   Answer: {result['answer'][:100]}...")
-            if 'query_info' in result:
-                print(f"   Query: {result['query_info']['original']} -> {result['query_info']['rewritten']}")
-        except Exception as e:
-            print(f"   Error: {e}")
-
-    # Run comprehensive test if desired
-    run_comprehensive = input("\nRun comprehensive test? (y/n): ").lower() == 'y'
-    if run_comprehensive:
-        comprehensive_test()
+    run_optimized_evaluation()
