@@ -52,17 +52,20 @@ def generate_answers_for_configs(rag_base_config: Dict[str, Any], dataset_path: 
             rewrite_mode=rewrite_mode,
             vector_weight=rag_base_config.get("vector_weight", 0.7),
             enable_mmr=rag_base_config.get("enable_mmr", True),
+            mmr_lambda=rag_base_config.get("mmr_lambda", 0.6),
             qdrant_url=rag_base_config.get("qdrant_url"),
             qdrant_api_key=rag_base_config.get("qdrant_api_key"),
             bm25_prefetch=200 if retrieval_mode == RetrievalMode.HYBRID else 100,
             vector_prefetch=100 if retrieval_mode == RetrievalMode.HYBRID else 50,
-            hybrid_method=HybridCombinationMethod.RRF if retrieval_mode == RetrievalMode.HYBRID else None
+            hybrid_method=HybridCombinationMethod.RRF if retrieval_mode == RetrievalMode.HYBRID else None,
+            rrf_k=rag_base_config.get("rrf_k", 60),
+            score_threshold=rag_base_config.get("score_threshold", 0.1),
         )
 
         eval_samples = []
         for i, row in enumerate(data):
             print(f"[{i + 1}/{len(data)}] {row['question'][:50]}...")
-            out = rag_module.answer(question=row["question"], limit=10)
+            out = rag_module.answer(question=row["question"])
             eval_samples.append({
                 "user_input": row["question"],
                 "retrieved_contexts": [c.text for c in out["chunks"]],
@@ -337,7 +340,7 @@ if __name__ == "__main__":
                         help="Mode: 'answers' to generate answers, 'eval' to run evaluation, 'all' for both")
     args = parser.parse_args()
 
-    if args.max_samples:
+    if args.max_samples != "None":
         max_samples = int(args.max_samples)
     else:
         max_samples = None
@@ -372,8 +375,14 @@ if __name__ == "__main__":
             "llm": rag_llm,
             "qdrant_url": os.getenv("QDRANT_URL"),
             "qdrant_api_key": os.getenv("QDRANT_API_KEY"),
-            "vector_weight": 0.7,
+            "vector_weight": 0.6,
             "enable_mmr": False,
+            "mmr_lambda": 0.6,
+            "limit": 7,
+            "rrf_k":60,
+            "bm25_prefetch": 100,
+            "vector_prefetch": 50,
+            "score_threshold": 0.05
         }
 
         generate_answers_for_configs(rag_base_config, args.dataset, args.output_dir, max_samples)

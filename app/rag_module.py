@@ -40,7 +40,6 @@ class HybridCombinationMethod(Enum):
     RANK_WEIGHTED = "rank_weighted"
 
 
-class
 
 
 def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
@@ -62,12 +61,34 @@ def _format_context(chunks: List[RAGChunk], max_chars: int = 8000) -> str:
 
 
 def _tokenize(text: str) -> List[str]:
-    """Simple tokenizer for BM25"""
+    """
+    Improved tokenizer for Russian financial text
+    - Keeps more informative words
+    - Handles Russian financial terms better
+    """
     text = text.lower().strip()
-    # Split by punctuation and whitespace
-    tokens = re.findall(r'\b\w+\b', text)
-    tokens = [t for t in tokens if len(t) > 1]
-    return tokens
+
+    # Extract words, numbers, and percentages
+    tokens = re.findall(r'\b\w+\b|%', text)
+
+    # Minimal stopword list - only truly uninformative words
+    minimal_stopwords = {
+        'в', 'на', 'с', 'по', 'для', 'к', 'о', 'от', 'из', 'у',
+        'и', 'а', 'но', 'или', 'же', 'что', 'как', 'это', 'то',
+        'же', 'бы', 'ли'
+    }
+
+    # Keep tokens that are:
+    # - Longer than 2 chars OR numbers OR percentage sign
+    # - Not in minimal stopword list
+    filtered = []
+    for t in tokens:
+        if t == '%' or t.isdigit():
+            filtered.append(t)
+        elif len(t) > 2 and t not in minimal_stopwords:
+            filtered.append(t)
+
+    return filtered
 
 
 class QueryRewriter:
@@ -103,6 +124,37 @@ class QueryRewriter:
         """Load a trained rewriter model"""
         logger.info(f"Trainable rewriter would load from {self.trainable_model_path}")
 
+    def should_rewrite_query(self, query: str) -> bool:
+        """
+        Decide if query needs rewriting based on characteristics
+        Only rewrite short, vague queries
+        """
+        words = query.split()
+
+        # Don't rewrite if:
+        # - Query is already detailed (>8 words)
+        if len(words) > 6:
+            return False
+
+        # - Query contains specific financial terms
+        # financial_terms = [
+        #     'дивиденд', 'акци', 'облигаци', 'портфел', 'доходност',
+        #     'риск', 'капитал', 'инвестиц', 'рынок', 'курс',
+        #     'процент', 'ставк', 'кредит', 'депозит'
+        # ]
+        # if any(term in query.lower() for term in financial_terms):
+        #     return False
+
+        # - Query is a complete sentence (has question words + verbs)
+        # question_words = ['что', 'как', 'где', 'когда', 'почему', 'какой', 'какая', 'какие']
+        # has_question = any(qw in query.lower() for qw in question_words)
+        # if has_question and len(words) > 4:
+        #     return False
+
+        # Rewrite only short, vague queries
+        return True
+
+
     def rewrite(
             self,
             query: str,
@@ -114,13 +166,19 @@ class QueryRewriter:
         if self.mode == RewriteMode.NONE:
             return query
 
+        if not self.should_rewrite_query(query):
+            print("rewriting not required")
+            logger.debug(f"Query doesn't need rewriting: {query}")
+            return query
+
         original_query = query
 
         # Try multiple rewriting strategies
         for attempt in range(max_retries):
             try:
                 if self.mode == RewriteMode.FROZEN_LLM:
-                    rewritten = self._rewrite_with_llm(query, task_type, few_shot_examples, attempt)
+                    #rewritten = self._rewrite_with_llm(query, task_type, few_shot_examples, attempt)
+                    rewritten = self._rewrite_with_llm_simple(query, attempt)
                 elif self.mode == RewriteMode.TRAINABLE:
                     rewritten = self._rewrite_with_trainable(query, task_type)
                 else:
@@ -173,6 +231,80 @@ class QueryRewriter:
         except Exception as e:
             logger.error(f"LLM rewriting failed: {e}")
             return query
+
+    def _rewrite_with_llm_simple(
+            self,
+            query: str,
+            attempt: int = 0
+    ) -> str:
+        """
+        Simplified rewriting that adds terms instead of replacing
+        """
+        if not self.llm:
+            return query
+
+        # For first attempt, just add financial context
+        if attempt == 0:
+            prompt = self._build_simple_rewrite_prompt(query)
+        else:
+            # Fallback: just return original query with domain
+            return f"{query} финансы"
+
+        try:
+            rewritten = self.llm.generate(prompt)
+            rewritten = self._clean_rewritten_query(rewritten)
+
+            # Safety: ensure original query words are preserved
+            original_words = set(query.lower().split())
+            rewritten_words = set(rewritten.lower().split())
+
+            # If original query lost more than 30% of words, merge them back
+            preserved = original_words.intersection(rewritten_words)
+            if len(preserved) < len(original_words) * 0.7:
+                # Add back missing words
+                missing = original_words - rewritten_words
+                rewritten = rewritten + " " + " ".join(missing)
+
+            # Limit total length
+            words = rewritten.split()
+
+            # Keep original query + top additions
+            original_parts = query.split()
+            additions = [w for w in words if w not in original_parts][:10]
+            rewritten = " ".join(original_parts + additions)
+
+            return rewritten.strip()
+
+        except Exception as e:
+            logger.error(f"LLM rewriting failed: {e}")
+            return query
+
+    def _build_simple_rewrite_prompt(self, query: str) -> str:
+        """
+        Simplified prompt that focuses on expanding, not replacing
+        """
+        return f"""Ты — модель для переписывания запросов пользователя в более точную и информативную поисковую формулировку для системы извлечения знаний (RAG). 
+Твоя задача:
+
+1. Преобразовать исходный пользовательский вопрос в **семантически расширенный запрос**, который:
+   - содержит релевантные **термины предметной области**
+   - включает **синонимы и связанные ключевые слова**
+   - устраняет двусмысленности и разговорные формулировки
+2. Сохранить исходный смысл, но сделать запрос максимально подходящим для поиска в **учебной/финансовой базе знаний**.
+3. Не делай запрос слишком длинным — концентрируйся на ключевых терминах и понятиях.
+
+Формируй ответ в виде **одной поисковой фразы** (без объяснений).
+
+Примеры:
+
+Вопрос: «Что такое диверсификация портфеля?»  
+Переписанный запрос: «Диверсификация инвестиционного портфеля: определение, цели, методы снижения рисков и распределение активов»
+
+Вопрос: «Как рассчитать доходность акции?»  
+Переписанный запрос: «Методы расчета доходности акций: формулы, общая и годовая доходность, влияние дивидендов»
+
+Теперь перепиши запрос:
+«{query}»"""
 
     def _build_improved_prompt(
             self,
@@ -425,14 +557,14 @@ class RAGModule:
             retrieval_mode: RetrievalMode = RetrievalMode.HYBRID,
             rewrite_mode: RewriteMode = RewriteMode.NONE,
             hybrid_method: HybridCombinationMethod = HybridCombinationMethod.RRF,
-            bm25_prefetch: int = 200,  # Increased for hybrid
-            vector_prefetch: int = 100,  # Increased for hybrid
-            vector_weight: float = 0.5,  # Balanced weight
+            bm25_prefetch: int = 100,  # Increased for hybrid
+            vector_prefetch: int = 50,  # Increased for hybrid
+            vector_weight: float = 0.6,  # Balanced weight
             enable_mmr: bool = True,
             mmr_lambda: float = 0.5,  # More balanced
             rrf_k: int = 60,  # RRF constant
-            limit: int = 10,  # Default limit increased to 10
-            score_threshold: float = 0.1,  # Lower threshold for more results
+            limit: int = 7,  # Default limit increased to 10
+            score_threshold: float = 0.05,  # Lower threshold for more results
             domain: str = "finance"
     ):
         # Initialize Qdrant client
@@ -595,6 +727,15 @@ class RAGModule:
         vec = self.model.encode(q, normalize_embeddings=True)
         return np.asarray(vec, dtype=np.float32)
 
+    def _embed_texts(self, texts: List[str]) -> np.ndarray:
+        if not self._model_enabled or self.model is None:
+            raise RuntimeError(
+                "Модель эмбеддингов не загружена. Установите EMBEDDING_MODEL в .env или передайте model_name в RAGModule")
+        if self.model_is_e5:
+            texts = [f"passage: {t}" for t in texts]
+        vecs = self.model.encode(texts, normalize_embeddings=True, batch_size=32, show_progress_bar=False)
+        return np.asarray(vecs, dtype=np.float32)
+
     def _get_vector_results(
             self,
             query_vec: np.ndarray,
@@ -675,39 +816,49 @@ class RAGModule:
             vector_docs: List[HybridDocument],
             bm25_docs: List[HybridDocument],
     ) -> List[HybridDocument]:
-        """Combine using weighted sum with better normalization"""
-
-        # Collect all scores for global normalization
+        """
+        Improved combination that preserves BM25 score characteristics
+        Uses percentile-based normalization instead of min-max
+        """
         all_vector_scores = [d.vector_score for d in vector_docs if d.vector_score > 0]
         all_bm25_scores = [d.bm25_score for d in bm25_docs if d.bm25_score > 0]
 
         if not all_vector_scores and not all_bm25_scores:
             return []
 
-        # Global normalization factors
-        vector_min = min(all_vector_scores) if all_vector_scores else 0
-        vector_max = max(all_vector_scores) if all_vector_scores else 1
-        vector_range = vector_max - vector_min if vector_max > vector_min else 1
+        # Use percentile-based normalization (more robust)
+        def normalize_percentile(scores):
+            if not scores:
+                return {}
+            arr = np.array(scores)
+            # Use 5th and 95th percentile to reduce outlier impact
+            p5 = np.percentile(arr, 5)
+            p95 = np.percentile(arr, 95)
+            range_val = p95 - p5 if p95 > p5 else 1
 
-        bm25_min = min(all_bm25_scores) if all_bm25_scores else 0
-        bm25_max = max(all_bm25_scores) if all_bm25_scores else 1
-        bm25_range = bm25_max - bm25_min if bm25_max > bm25_min else 1
+            normalized = {}
+            for i, score in enumerate(scores):
+                norm = (score - p5) / range_val
+                norm = max(0, min(1, norm))  # Clip to [0, 1]
+                normalized[i] = norm
+            return normalized
+
+        vector_norm = normalize_percentile(all_vector_scores)
+        bm25_norm = normalize_percentile(all_bm25_scores)
 
         # Combine documents
         docs_by_id = {}
 
-        for doc in vector_docs:
-            norm_vector = (doc.vector_score - vector_min) / vector_range if vector_range > 0 else 0
+        for idx, doc in enumerate(vector_docs):
             docs_by_id[doc.id] = {
                 "doc": doc,
-                "norm_vector": norm_vector,
+                "norm_vector": vector_norm.get(idx, 0),
                 "norm_bm25": 0.0
             }
 
-        for doc in bm25_docs:
-            norm_bm25 = (doc.bm25_score - bm25_min) / bm25_range if bm25_range > 0 else 0
+        for idx, doc in enumerate(bm25_docs):
             if doc.id in docs_by_id:
-                docs_by_id[doc.id]["norm_bm25"] = norm_bm25
+                docs_by_id[doc.id]["norm_bm25"] = bm25_norm.get(idx, 0)
                 docs_by_id[doc.id]["doc"].bm25_score = doc.bm25_score
                 docs_by_id[doc.id]["doc"].bm25_rank = doc.bm25_rank
                 docs_by_id[doc.id]["doc"].is_bm25_only = False
@@ -715,14 +866,16 @@ class RAGModule:
                 docs_by_id[doc.id] = {
                     "doc": doc,
                     "norm_vector": 0.0,
-                    "norm_bm25": norm_bm25
+                    "norm_bm25": bm25_norm.get(idx, 0)
                 }
 
         # Calculate combined scores
         combined_docs = []
         for doc_info in docs_by_id.values():
-            combined_score = (self.vector_weight * doc_info["norm_vector"] +
-                              (1 - self.vector_weight) * doc_info["norm_bm25"])
+            combined_score = (
+                    self.vector_weight * doc_info["norm_vector"] +
+                    (1 - self.vector_weight) * doc_info["norm_bm25"]
+            )
 
             doc = doc_info["doc"]
             doc.combined_score = combined_score
@@ -736,52 +889,49 @@ class RAGModule:
             bm25_docs: List[HybridDocument],
             limit: int
     ) -> List[HybridDocument]:
-        """Combine using Reciprocal Rank Fusion (RRF)"""
+        """
+        Fixed RRF implementation - uses stored ranks instead of re-ranking
 
-        # Create rank mappings
-        vector_ranks = {doc.id: rank for rank, doc in enumerate(vector_docs, 1)}
-        bm25_ranks = {doc.id: rank for rank, doc in enumerate(bm25_docs, 1)}
+        The RRF formula is: score = sum over all retrievers of [1 / (rank + k)]
+        where rank starts at 1 and k is typically 60
+        """
 
-        # Get all unique documents
+        # Collect all unique documents
         all_docs = {}
+
+        # Add vector docs
         for doc in vector_docs:
             all_docs[doc.id] = doc
 
+        # Merge with BM25 docs
         for doc in bm25_docs:
-            if doc.id not in all_docs:
-                all_docs[doc.id] = doc
-            else:
-                # Update BM25 info for existing doc
+            if doc.id in all_docs:
+                # Document appears in both - update BM25 info
                 existing = all_docs[doc.id]
                 existing.bm25_score = doc.bm25_score
                 existing.bm25_rank = doc.bm25_rank
                 existing.is_bm25_only = False
+            else:
+                # Document only in BM25 results
+                all_docs[doc.id] = doc
 
-        # Calculate RRF scores
-        for doc_id, doc in all_docs.items():
+        # Calculate RRF scores using STORED ranks
+        for doc in all_docs.values():
             rrf_score = 0.0
 
-            # Add vector rank contribution
-            vector_rank = vector_ranks.get(doc_id)
-            if vector_rank is not None:
-                doc.vector_rank = vector_rank
-                rrf_score += 1.0 / (vector_rank + self.rrf_k)
+            # Add contribution from vector search
+            if doc.vector_rank > 0:  # vector_rank is set if doc came from vector search
+                rrf_score += 1.0 / (doc.vector_rank + self.rrf_k)
 
-            # Add BM25 rank contribution
-            bm25_rank = bm25_ranks.get(doc_id)
-            if bm25_rank is not None:
-                doc.bm25_rank = bm25_rank
-                rrf_score += 1.0 / (bm25_rank + self.rrf_k)
+            # Add contribution from BM25 search
+            if doc.bm25_rank > 0:  # bm25_rank is set if doc came from BM25 search
+                rrf_score += 1.0 / (doc.bm25_rank + self.rrf_k)
 
             doc.rrf_score = rrf_score
+            doc.combined_score = rrf_score  # For consistency
 
-        # Sort by RRF score
+        # Sort by RRF score and return top results
         sorted_docs = sorted(all_docs.values(), key=lambda x: x.rrf_score, reverse=True)
-
-        # Update combined_score to RRF score for consistency
-        for doc in sorted_docs:
-            doc.combined_score = doc.rrf_score
-
         return sorted_docs[:limit]
 
     def retrieve(
@@ -1049,23 +1199,23 @@ def run_optimized_evaluation():
 
     # Test configurations
     configs = [
-        {
-            "name": "Hybrid RRF (Optimized)",
-            "retrieval_mode": RetrievalMode.HYBRID,
-            "rewrite_mode": RewriteMode.NONE,
-            "hybrid_method": HybridCombinationMethod.RRF,
-            "vector_weight": 0.5,
-            "enable_mmr": False,
-            "bm25_prefetch": 200,
-            "vector_prefetch": 100,
-            "limit": 10
-        },
-        {
-            "name": "Dense-only (Baseline)",
-            "retrieval_mode": RetrievalMode.DENSE_ONLY,
-            "rewrite_mode": RewriteMode.NONE,
-            "limit": 10
-        },
+        # {
+        #     "name": "Hybrid RRF (Optimized)",
+        #     "retrieval_mode": RetrievalMode.HYBRID,
+        #     "rewrite_mode": RewriteMode.NONE,
+        #     "hybrid_method": HybridCombinationMethod.RRF,
+        #     "vector_weight": 0.5,
+        #     "enable_mmr": False,
+        #     "bm25_prefetch": 200,
+        #     "vector_prefetch": 100,
+        #     "limit": 10
+        # },
+        # {
+        #     "name": "Dense-only (Baseline)",
+        #     "retrieval_mode": RetrievalMode.DENSE_ONLY,
+        #     "rewrite_mode": RewriteMode.NONE,
+        #     "limit": 10
+        # },
         {
             "name": "Hybrid RRF + Rewriting",
             "retrieval_mode": RetrievalMode.HYBRID,
