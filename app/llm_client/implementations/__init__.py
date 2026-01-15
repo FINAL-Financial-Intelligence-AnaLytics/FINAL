@@ -1,8 +1,5 @@
-"""
-Реализации LLM клиентов для различных провайдеров
-"""
+from .mistral_financial_client import MistralFinancialClient
+from .mistral_client import MistralLLM
 
-from .mistral_client import MistralFinancialClient
-
-__all__ = ['MistralFinancialClient']
+__all__ = ['MistralFinancialClient', 'MistralLLM']
 

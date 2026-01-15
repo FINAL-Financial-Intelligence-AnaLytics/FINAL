@@ -72,6 +72,6 @@ class FinancialLLMClient(ABC):
         return formatted
     
     def _add_safety_disclaimer(self, response: str) -> str:
-        disclaimer = "\n\n⚠️ Важно: Эта информация носит образовательный характер и не является персональной финансовой рекомендацией."
+        disclaimer = "\n\nВажно: Эта информация носит образовательный характер и не является персональной финансовой рекомендацией."
         return response + disclaimer
 

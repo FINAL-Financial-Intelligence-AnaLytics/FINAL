@@ -1,62 +1,58 @@
-from typing import List, Dict, Optional
-import os
-from ..base_client import FinancialLLMClient
+import requests
+import json
+from typing import Optional
 
 
-class MistralFinancialClient(FinancialLLMClient):
-    def __init__(self, model_name: str = "mistral-large-latest", api_key: Optional[str] = None):
-        super().__init__(model_name, api_key)
-        
-        try:
-            from mistralai import Mistral
-            self.Mistral = Mistral
-        except ImportError:
-            raise ImportError(
-                "Библиотека mistralai не установлена. "
-                "Установите её: pip install mistralai"
-            )
-        
-        api_key_value = api_key or os.getenv("MISTRAL_API_KEY")
-        if not api_key_value:
-            raise ValueError(
-                "API ключ Mistral не предоставлен. "
-                "Укажите его в параметре api_key или установите переменную окружения MISTRAL_API_KEY"
-            )
-        
-        self.client = self.Mistral(api_key=api_key_value)
-    
-    def generate_response(
+class MistralLLM:
+    def __init__(
         self,
-        prompt: str,
-        context: Optional[List[Dict]] = None
-    ) -> str:
-        if not self._validate_request(prompt):
-            return (
-                "Извините, я не могу дать персональные финансовые рекомендации "
-                "или сравнивать конкретные продукты. Я могу помочь вам понять "
-                "принципы финансовой грамотности и объяснить общие концепции."
-            )
-        
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-        
-        # Добавляем контекст из RAG, если он есть
-        if context:
-            context_text = self._format_rag_context(context)
-            messages[-1]["content"] = prompt + context_text
-        
-        try:
-            response = self.client.chat.complete(
-                model=self.model_name,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2000
-            )
-            
-            return response.choices[0].message.content.strip()
-        
-        except Exception as e:
-            return f"Ошибка при генерации ответа: {str(e)}"
+        api_key: str,
+        model: str = "mistral-small-latest",
+        base_url: str = "https://api.mistral.ai/v1",
+        temperature: float = 0.1,
+    ):
+        if not api_key:
+            raise ValueError("api_key не может быть пустым. Установите MISTRAL_API_KEY в .env файле")
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip('/')
+        self.temperature = temperature
 
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        if not self.api_key:
+            raise ValueError("API ключ не установлен. Проверьте MISTRAL_API_KEY в .env файле")
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        default_system_prompt = (
+            "You are a factual assistant. Use ONLY the provided context. "
+            "If the context is insufficient, say so. "
+            "Do NOT reveal chain-of-thought; provide only the final answer."
+        )
+        
+        system_content = system_prompt if system_prompt else default_system_prompt
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_content,
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": self.temperature,
+        }
+
+        url = f"{self.base_url}/chat/completions"
+        resp = requests.post(
+            url,
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=90,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
